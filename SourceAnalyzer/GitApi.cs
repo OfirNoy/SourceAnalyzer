@@ -1,5 +1,6 @@
 ﻿using GraphBuilder.Models;
 using LibGit2Sharp;
+using LibGit2Sharp.Handlers;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -36,7 +37,7 @@ namespace GraphBuilder
                     var packageRefs = doc.GetElementsByTagName("PackageReference");
                     var projectRefs = doc.GetElementsByTagName("ProjectReference");
                     var references = doc.GetElementsByTagName("Reference");                    
-                    var targetType = doc.GetElementsByTagName("OutputType").Cast<XmlNode>().FirstOrDefault()?.InnerXml;
+                    var targetType = doc.GetElementsByTagName("OutputType").Cast<XmlNode>().FirstOrDefault()?.InnerXml.ToLower();
                     var targetName = doc.GetElementsByTagName("AssemblyName").Cast<XmlNode>().FirstOrDefault()?.InnerXml;
                     
                     var projectPath = Path.GetFullPath(entry.Path);
@@ -64,9 +65,12 @@ namespace GraphBuilder
 
                     foreach (XmlNode node in packageRefs)
                     {
-                        var name = node.Attributes["Include"].Value;
-                        var package = CreateSourceNode(name, "NuGet");
-                        links.Add(new Link(package.id, sourceNode.id));
+                        var name = node.Attributes["Include"]?.Value;
+                        if (!string.IsNullOrEmpty(name))
+                        {
+                            var package = CreateSourceNode(name, "NuGet");
+                            links.Add(new Link(package.id, sourceNode.id));
+                        }
                     }
 
                     foreach (XmlNode node in projectRefs)
@@ -101,15 +105,21 @@ namespace GraphBuilder
                     }
 
                     // Add output                    
+                    if(string.IsNullOrEmpty(targetType))
+                    {
+                        targetType = "library";
+                    }
+
                     if (string.IsNullOrEmpty(targetName))
                     {
                         targetName = Path.GetFileNameWithoutExtension(projectName) + ".dll";
-                        targetType = "Library";
+                        targetType = "library";
                     }
                     else
                     {
-                        targetName = targetType == "Library" ? targetName + ".dll" : targetName + "." + targetType;
+                        targetName = targetType.ToLower() == "library" ? targetName + ".dll" : targetName + "." + targetType;
                     }
+                    
                     targetName = Path.Combine(Path.GetDirectoryName(projectName), targetName);
                     var targetNode = new SourceNode(targetName, targetType);                    
                     links.Add(new Link(sourceNode.id, targetNode.id));
@@ -117,12 +127,17 @@ namespace GraphBuilder
                 }
             }
             Directory.SetCurrentDirectory(currentDir);
-            return new Graph(repoUrl, nodes.Values.ToList(), links);
+            return new Graph(repoUrl, nodes.Values.ToList(), links) { message = $"Nodes: {nodes.Count}, Links: {links.Count}" };
         }
 
-        public static void Clone(string source, string target)
+        public static void Clone(string source, string target, Action<TransferProgress> progress)
         {
-            Repository.Clone(source, target);
+            TransferProgressHandler progressHandler = (tp) =>
+            {
+                progress(tp);
+                return true;
+            };
+            Repository.Clone(source, target, new CloneOptions { OnTransferProgress = progressHandler });
         }
 
         public static void Fetch(string source)

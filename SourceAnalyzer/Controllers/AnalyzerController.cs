@@ -14,6 +14,7 @@ namespace GraphBuilder.Controllers
         private static ConcurrentDictionary<string, Graph> _cache = new ConcurrentDictionary<string, Graph>();
         private readonly ILogger<AnalyzerController> _logger;
         private static ConcurrentDictionary<string, Task> _processing = new ConcurrentDictionary<string, Task>();
+        private static ConcurrentDictionary<string, string> _status = new ConcurrentDictionary<string, string>();
 
         public AnalyzerController(ILogger<AnalyzerController> logger)
         {
@@ -37,27 +38,35 @@ namespace GraphBuilder.Controllers
 
                 var rootPath = Environment.GetEnvironmentVariable("SGB_ROOT_PATH");
                 var repoName = Path.GetFileNameWithoutExtension(repoUrl);
-                var repoPath = Path.Combine(rootPath, repoName);
+                var repoPath = Path.GetFullPath(Path.Combine(rootPath, repoName));
 
+                Graph status = new Graph(repoUrl);
                 var task = new Task(() =>
                 {
                     try
                     {
                         if (!Directory.Exists(repoPath))
                         {
-                            GitApi.Clone(repoUrl, repoPath);
+                            GitApi.Clone(repoUrl, repoPath, (tp) => 
+                            {
+                                var msg = $"Objects: {tp.ReceivedObjects} of {tp.TotalObjects}, Bytes: {tp.ReceivedBytes}";
+                                _status.AddOrUpdate(repoUrl, msg, (s,n) => msg);
+                            });
                         }
 
                         GitApi.Fetch(repoPath);
 
                         var graph = GitApi.ParseProjectFiles(repoUrl, repoPath);
 
-                        _cache.TryAdd(repoUrl, graph);
-                        _processing.TryRemove(repoUrl, out var removed);
+                        _cache.TryAdd(repoUrl, graph);                        
                     }
                     catch(Exception ex)
                     {
                         _logger.LogError(ex, "Background task encountered a critical error");
+                    }
+                    finally
+                    {
+                        _processing.TryRemove(repoUrl, out var removed);
                     }
                 });
 
@@ -65,7 +74,9 @@ namespace GraphBuilder.Controllers
                 {
                     task.Start();
                 }
-                return StatusCode(202, new Graph(repoUrl));
+                _status.TryGetValue(repoUrl, out var msg);
+                status.message = msg;
+                return StatusCode(202, status);
             }
             catch(Exception ex)
             {
